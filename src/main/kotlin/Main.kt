@@ -1,8 +1,7 @@
-import org.flywaydb.core.Flyway
-
 fun main() {
+    // Инициализация базы данных и наполнение тестовыми данными
     initDatabase()
-    seedDatabase(100) // Наполняем тестовыми данными
+    seedDatabase(1000) // Наполняем тестовыми данными
 
     println("1. Individual Events with Tie Scores and Gold Medals")
     getTieEventsWithGoldMedals()
@@ -15,4 +14,7 @@ fun main() {
 
     println("\n4. Top 5 countries by group medal-to-population ratio (2000)")
     getTop5CountriesByGroupMedalRatio()
+
+    println("\n5. Player Statistics for the Year 2004")
+    getPlayerStatisticsFor2004()
 }

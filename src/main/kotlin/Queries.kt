@@ -10,65 +10,75 @@ fun getPlayerStatisticsFor2004() {
             .innerJoin(Olympics, { Events.olympicId }, { Olympics.olympicId })
             .slice(
                 Players.birthDate.year(),
-                Players.playerId.countDistinct(), // Count distinct players
-                Results.medal.count(),           // Total medals
-                Results.medal.countDistinct(),   // Distinct medals
+                Players.playerId.countDistinct().alias("player_count"),
+                Results.medal.count().alias("gold_medal_count")
             )
-            .select { Olympics.year eq 2004 }
+            .select { (Olympics.year eq 2004) and (Results.medal eq "GOLD") }
             .groupBy(Players.birthDate.year())
 
         query.forEach {
             val yearOfBirth = it[Players.birthDate.year()]
-            val playerCount = it[Players.playerId.countDistinct()]
-            val medalCount = it[Results.medal.count()]
-            println("Birth Year: $yearOfBirth, Players: $playerCount, Medals: $medalCount")
+            val playerCount = it[Players.playerId.countDistinct().alias("player_count")]
+            val goldMedalCount = it[Results.medal.count().alias("gold_medal_count")]
+            println("Birth Year: $yearOfBirth, Players: $playerCount, Gold Medals: $goldMedalCount")
         }
     }
 }
 
-
 fun getTieEventsWithGoldMedals() {
     transaction {
-        val eventsWithTies = Results
+        // Определяем агрегатную функцию для подсчёта количества золотых медалистов
+        val goldWinnersCount = Results.playerId.count()
+
+        // Строим запрос
+        val query = Results
             .innerJoin(Events, { Results.eventId }, { Events.eventId })
-            .slice(Events.name, Results.eventId.count())
+            .slice(Events.name, goldWinnersCount)
             .select {
                 (Results.medal eq "GOLD") and (Events.isTeamEvent eq false)
             }
             .groupBy(Results.eventId, Events.name)
-            .having { Results.eventId.count() greaterEq 2 }
+            .having { goldWinnersCount greaterEq longLiteral(2) }
 
-        eventsWithTies.forEach {
-            println("Event: ${it[Events.name]}, Tie count: ${it[Results.eventId.count()]}")
+        // Выполняем запрос и обрабатываем результаты
+        query.forEach {
+            val eventName = it[Events.name]
+            val tieCount = it[goldWinnersCount]
+            println("Event: $eventName, Tie count: $tieCount")
         }
     }
 }
 
-
 fun getPlayersWithMedals() {
     transaction {
-        val playersWithMedals = Results
-            .innerJoin(Players, { Results.playerId }, { Players.playerId })
-            .innerJoin(Events, { Results.eventId }, { Events.eventId })
-            .innerJoin(Olympics, { Events.olympicId }, { Olympics.olympicId })
-            .slice(Players.name, Olympics.olympicId)
-            .select {
-                Results.medal inList listOf("GOLD", "SILVER", "BRONZE")
-            }
-            .distinct()
+        val medalCount = Results.medal.countDistinct().alias("medal_count")
 
-        playersWithMedals.forEach {
-            println("Player: ${it[Players.name]}, Olympic ID: ${it[Olympics.olympicId]}")
+        val query = Results
+            .innerJoin(Events, { Results.eventId }, { Events.eventId })
+            .select {
+                Results.medal.inList(listOf("GOLD", "SILVER", "BRONZE"))
+            }
+            .groupBy(Results.playerId, Events.olympicId)
+            .having { medalCount eq longLiteral(3) }
+            .adjustSlice { slice(Results.playerId, Events.olympicId) }
+
+        query.forEach {
+            val playerId = it[Results.playerId]
+            val olympicId = it[Events.olympicId]
+            val playerName = Players
+                .select { Players.playerId eq playerId }
+                .singleOrNull()?.get(Players.name) ?: "Unknown Player"
+            println("Player: $playerName, Olympic ID: $olympicId")
         }
     }
 }
 
 
 fun getCountryWithHighestVowelPercentage() {
-    val vowels = setOf("A", "E", "I", "O", "U")
+    val vowels = listOf("A", "E", "I", "O", "U")
 
     transaction {
-        // Total players per country
+        // Общее количество игроков по странам
         val totalPlayersByCountry = Players
             .innerJoin(Countries, { Players.countryId }, { Countries.countryId })
             .slice(Countries.name, Players.playerId.count())
@@ -76,17 +86,18 @@ fun getCountryWithHighestVowelPercentage() {
             .groupBy(Countries.name)
             .associate { it[Countries.name] to it[Players.playerId.count()] }
 
-        // Players with names starting with a vowel per country
+        // Количество игроков с именами, начинающимися на гласную, по странам
         val vowelPlayersByCountry = Players
             .innerJoin(Countries, { Players.countryId }, { Countries.countryId })
             .slice(Countries.name, Players.playerId.count())
             .select {
+                // Используем функцию substring(1, 1) для получения первого символа (SQL использует 1-индексацию)
                 Players.name.upperCase().substring(1, 1) inList vowels
             }
             .groupBy(Countries.name)
             .associate { it[Countries.name] to it[Players.playerId.count()] }
 
-        // Calculate percentages
+        // Расчёт процентов
         val countryPercentages = totalPlayersByCountry.mapNotNull { (country, totalPlayers) ->
             val vowelPlayers = vowelPlayersByCountry[country] ?: 0
             if (totalPlayers > 0) {
@@ -94,7 +105,7 @@ fun getCountryWithHighestVowelPercentage() {
             } else null
         }
 
-        // Find the country with the highest percentage
+        // Нахождение страны с наибольшим процентом
         val maxCountry = countryPercentages.maxByOrNull { it.second }
         maxCountry?.let {
             println("Country: ${it.first}, Percentage: ${"%.2f".format(it.second)}%")
@@ -105,14 +116,17 @@ fun getCountryWithHighestVowelPercentage() {
 
 fun getTop5CountriesByGroupMedalRatio() {
     transaction {
+        val medalCountAlias = Results.medal.count().alias("medal_count")
+
         val groupMedals = Results
             .innerJoin(Events, { Results.eventId }, { Events.eventId })
             .innerJoin(Olympics, { Events.olympicId }, { Olympics.olympicId })
-            .innerJoin(Countries, { Olympics.countryId }, { Countries.countryId })
+            .innerJoin(Players, { Results.playerId }, { Players.playerId })
+            .innerJoin(Countries, { Players.countryId }, { Countries.countryId })
             .slice(
                 Countries.name,
                 Countries.population,
-                Results.medal.count()
+                medalCountAlias
             )
             .select {
                 (Olympics.year eq 2000) and (Events.isTeamEvent eq true)
@@ -122,18 +136,17 @@ fun getTop5CountriesByGroupMedalRatio() {
         val medalRatios = groupMedals.mapNotNull {
             val country = it[Countries.name]
             val population = it[Countries.population]
-            val medalCount = it[Results.medal.count()]
+            val medalCount = it[medalCountAlias]
 
             if (population > 0) {
                 country to (medalCount.toDouble() / population)
             } else null
         }
 
-        val top5 = medalRatios.sortedByDescending { it.second }.take(5)
+        val top5 = medalRatios.sortedBy { it.second }.take(5)
 
         top5.forEach {
             println("Country: ${it.first}, Medal-to-Population Ratio: ${it.second}")
         }
     }
 }
-
